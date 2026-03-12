@@ -1,0 +1,29 @@
+// list directory contents
+GET http://localhost:8090/dirs/
+
+###
+// create directory
+PUT http://localhost:8090/dirs/test-dir2
+
+###
+// delete directory
+DELETE http://localhost:8090/dirs/test-dir
+
+###
+// upload file
+PUT http://localhost:8090/files/test-dir/README.md
+Content-Type: multipart/form-data; boundary=MyBoundary
+
+--MyBoundary
+Content-Disposition: form-data; name="file"; filename="README.md"
+Content-Type: application/octet-stream
+<@ ./README.md
+--MyBoundary--
+
+###
+// download file
+GET http://localhost:8090/files/test-dir/README.md
+
+###
+// delete file
+DELETE http://localhost:8090/files/test-dir/test-file.txt
