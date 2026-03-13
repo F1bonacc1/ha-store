@@ -1,0 +1,57 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/F1bonacc1/process-compose/main/schemas/process-compose-schema.json
+
+version: "0.5"
+
+processes:
+  sanitycheck:
+    command: "NV=$(nats-server -v) && echo Found NATS: $${NV}"
+    availability:
+      restart: "exit_on_failure"
+  prepare:
+    command: mkdir -p ./nats-cluster
+    depends_on:
+      sanitycheck:
+        condition: process_completed_successfully
+  pc_log:
+    command: "tail -f -n100 process-compose-${USER}.log"
+    working_dir: "/tmp"
+  
+  nats-cluster-node:
+    command: >
+      nats-server --name N$${PC_REPLICA_NUM} --js --sd ./data/n$${PC_REPLICA_NUM} --cluster_name=nats-cluster
+      -p 422$${PC_REPLICA_NUM}
+      -m 822$${PC_REPLICA_NUM}
+      --cluster nats://127.0.0.1:622$${PC_REPLICA_NUM}
+      --routes=nats-route://127.0.0.1:6220,nats-route://127.0.0.1:6221,nats-route://127.0.0.1:6222
+    replicas: 3
+    working_dir: "./nats-cluster"
+    depends_on:
+      prepare:
+        condition: process_completed_successfully
+    description: "NATS Server instance N{{ .PC_REPLICA_NUM }} (port 422{{ .PC_REPLICA_NUM }}) with JetStream enabled"
+    readiness_probe:
+      http_get:
+        host: 127.0.0.1
+        path: "/healthz?js-server-only=true"
+        port: "822{{ .PC_REPLICA_NUM }}"
+      initial_delay_seconds: 5
+      period_seconds: 10
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3   
+    # ready_log_line: "Server is ready"
+
+  ha-store:
+    command: ./ha-store -nats-url nats://localhost:4220 -replicas 3
+    description: "HA Store API server"
+    depends_on:
+      nats-cluster-node-0:
+        condition: process_healthy
+      nats-cluster-node-1:
+        condition: process_healthy
+      nats-cluster-node-2:
+        condition: process_healthy
+
+  nats-top:
+    command: nats-top
+    is_foreground: true
