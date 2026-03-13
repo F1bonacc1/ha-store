@@ -151,6 +151,71 @@ All files are stored in a single shared bucket. When mTLS is enabled, client cer
   curl -X DELETE http://localhost:8090/dirs/documents
   ```
 
+## stctl — CLI Client
+
+`stctl` is a command-line tool to interact with an ha-store server.
+
+### Build
+
+```bash
+make build-stctl
+```
+
+The binary is placed at `bin/stctl`.
+
+### Usage
+
+```bash
+# Set server (default: http://localhost:8090)
+export STCTL_SERVER=http://localhost:8090
+# or use --server / -s flag
+
+# Connect with mTLS
+stctl --server https://localhost:8090 --tls-cert client.crt --tls-key client.key --tls-ca ca.crt <command>
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--server`, `-s` | `http://localhost:8090` | ha-store server URL |
+| `--tls-cert` | - | Client certificate file for mTLS |
+| `--tls-key` | - | Client private key file for mTLS |
+| `--tls-ca` | - | CA certificate file for verifying the server |
+
+#### Files
+
+```bash
+# Upload a file
+stctl file put docs/readme.txt ./README.md
+
+# Download a file
+stctl file get docs/readme.txt ./downloaded.txt
+
+# Download to stdout
+stctl file get docs/readme.txt
+
+# Delete a file
+stctl file rm docs/readme.txt
+```
+
+#### Directories
+
+```bash
+# Create an empty directory
+stctl dir create mydir
+
+# List directory contents
+stctl dir ls mydir
+
+# Upload and extract an archive (default type: tgz)
+stctl dir extract mydir ./archive.tgz
+
+# Specify archive type (zip, tgz, targz, zst, 7z, 7zip)
+stctl dir extract mydir ./archive.zip --type zip
+
+# Delete a directory and its contents
+stctl dir rm mydir
+```
+
 ## Development
 
 ### Running Tests

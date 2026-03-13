@@ -1,11 +1,14 @@
 BINARY_NAME=ha-store
 
-.PHONY: all build run test coverage docker-up docker-down clean help
+.PHONY: all build build-stctl run test coverage docker-up docker-down clean help
 
-all: build
+all: build build-stctl
 
 build: ## Build the application
-	go build -o ${BINARY_NAME} main.go
+	go build -ldflags="-s -w" -o ${BINARY_NAME} main.go
+
+build-stctl: ## Build the stctl CLI tool
+	go build -ldflags="-s -w" -o bin/stctl ./cmd/stctl
 
 run: ## Run the application
 	go run main.go
@@ -29,6 +32,7 @@ docker-down: ## Stop docker dependencies
 clean: ## Clean build artifacts
 	go clean
 	rm -f ${BINARY_NAME}
+	rm -rf bin
 	rm -f coverage.out
 
 help: ## Display this help screen
