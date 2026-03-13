@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,11 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/nats-io/nats.go/jetstream"
 	"github.com/rs/zerolog/log"
+)
+
+const (
+	jsRetryAttempts = 5
+	jsRetryDelay    = time.Second
 )
 
 type FileHandler struct {
@@ -77,7 +83,31 @@ func (h *FileHandler) HandlePutFile(c *gin.Context) {
 		},
 	}
 
-	_, err = bucket.Put(c.Request.Context(), meta, throttledReader)
+	ctx, cancel := context.WithTimeout(c.Request.Context(), h.UploadDeadline)
+	defer cancel()
+
+	for attempt := range jsRetryAttempts {
+		if attempt > 0 {
+			// Reopen the file since the previous reader was consumed
+			src.Close()
+			src, err = file.Open()
+			if err != nil {
+				log.Error().Err(err).Str("path", path).Msg("failed to reopen file for retry")
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reopen file"})
+				return
+			}
+			throttledReader = NewThrottledReader(src, h.ThrottleSpeed)
+			log.Warn().Int("attempt", attempt+1).Str("path", path).Msg("retrying upload after stream error")
+			time.Sleep(jsRetryDelay)
+		}
+		_, err = bucket.Put(ctx, meta, throttledReader)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, jetstream.ErrNoStreamResponse) {
+			break
+		}
+	}
 	if err != nil {
 		log.Error().Err(err).Str("path", path).Msg("failed to save file")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save file: %v", err)})
@@ -96,9 +126,26 @@ func (h *FileHandler) HandleGetFile(c *gin.Context) {
 	// Add timeout to the request context to prevent hanging
 	ctx, cancel := context.WithTimeout(c.Request.Context(), h.UploadDeadline)
 	defer cancel()
-	obj, err := bucket.Get(ctx, path)
+
+	var (
+		obj jetstream.ObjectResult
+		err error
+	)
+	for attempt := range jsRetryAttempts {
+		if attempt > 0 {
+			log.Warn().Int("attempt", attempt+1).Str("path", path).Msg("retrying download after stream error")
+			time.Sleep(jsRetryDelay)
+		}
+		obj, err = bucket.Get(ctx, path)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, jetstream.ErrNoStreamResponse) {
+			break
+		}
+	}
 	if err != nil {
-		if err == jetstream.ErrObjectNotFound {
+		if errors.Is(err, jetstream.ErrObjectNotFound) {
 			log.Warn().Str("path", path).Msg("file not found")
 			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 			return
@@ -130,9 +177,21 @@ func (h *FileHandler) HandleDeleteFile(c *gin.Context) {
 	bucket := h.Store.GetBucket()
 
 	// First check if the file exists (quick operation)
-	_, err := bucket.GetInfo(c.Request.Context(), path)
+	var err error
+	for attempt := range jsRetryAttempts {
+		if attempt > 0 {
+			time.Sleep(jsRetryDelay)
+		}
+		_, err = bucket.GetInfo(c.Request.Context(), path)
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, jetstream.ErrNoStreamResponse) {
+			break
+		}
+	}
 	if err != nil {
-		if err == jetstream.ErrObjectNotFound {
+		if errors.Is(err, jetstream.ErrObjectNotFound) {
 			log.Warn().Str("path", path).Msg("file not found for deletion")
 			c.JSON(http.StatusNotFound, gin.H{"error": "file not found"})
 			return
