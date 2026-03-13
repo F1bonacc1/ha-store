@@ -15,7 +15,7 @@ processes:
   pc_log:
     command: "tail -f -n100 process-compose-${USER}.log"
     working_dir: "/tmp"
-  
+
   nats-cluster-node:
     command: >
       nats-server --name N$${PC_REPLICA_NUM} --js --sd ./data/n$${PC_REPLICA_NUM} --cluster_name=nats-cluster
@@ -38,7 +38,7 @@ processes:
       period_seconds: 10
       timeout_seconds: 3
       success_threshold: 1
-      failure_threshold: 3   
+      failure_threshold: 3
     # ready_log_line: "Server is ready"
 
   ha-store:
@@ -51,7 +51,16 @@ processes:
         condition: process_healthy
       nats-cluster-node-2:
         condition: process_healthy
+    availability:
+      restart: always
 
   nats-top:
-    command: nats-top
-    is_foreground: true
+    command: nats-top -s localhost -m 8220
+    depends_on:
+      nats-cluster-node-0:
+        condition: process_healthy
+      nats-cluster-node-1:
+        condition: process_healthy
+      nats-cluster-node-2:
+        condition: process_healthy
+    is_interactive: true

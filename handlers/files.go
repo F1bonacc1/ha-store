@@ -52,10 +52,26 @@ func (h *FileHandler) HandlePutFile(c *gin.Context) {
 	// internal pending queue on replicated clusters
 	throttledReader := NewThrottledReader(src, h.ThrottleSpeed)
 
+	// Read optional metadata form fields
+	permissions := c.PostForm("permissions")
+	if permissions == "" {
+		permissions = "0644"
+	}
+	owner := c.PostForm("owner")
+	if owner == "" {
+		owner = ownerFromTLS(c)
+	}
+	group := c.PostForm("group")
+
 	// Use streaming Put with larger chunk size (1MB) to reduce IPQ pressure
 	// when using replicated JetStream clusters
 	meta := jetstream.ObjectMeta{
 		Name: path,
+		Metadata: map[string]string{
+			"permissions": permissions,
+			"owner":       owner,
+			"group":       group,
+		},
 		Opts: &jetstream.ObjectMetaOptions{
 			ChunkSize: 1024 * 1024, // 1MB chunks (default is 128KB)
 		},
@@ -140,4 +156,12 @@ func (h *FileHandler) HandleDeleteFile(c *gin.Context) {
 			log.Info().Str("path", path).Msg("async delete completed")
 		}
 	}()
+}
+
+// ownerFromTLS extracts the Common Name from the client's mTLS certificate.
+func ownerFromTLS(c *gin.Context) string {
+	if c.Request.TLS != nil && len(c.Request.TLS.PeerCertificates) > 0 {
+		return c.Request.TLS.PeerCertificates[0].Subject.CommonName
+	}
+	return ""
 }

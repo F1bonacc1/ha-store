@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/bodgit/sevenzip"
 	"github.com/gin-gonic/gin"
@@ -31,6 +32,9 @@ func (h *FileHandler) HandlePutDir(c *gin.Context) {
 	if !strings.HasSuffix(path, "/") {
 		path = path + "/"
 	}
+
+	// Read optional metadata form fields for extracted files
+	defaults := metaDefaults(c)
 
 	extractType := c.Query("extract")
 	if extractType == "" {
@@ -92,13 +96,13 @@ func (h *FileHandler) HandlePutDir(c *gin.Context) {
 
 	switch extractType {
 	case "zip":
-		extractErr = h.extractZip(c.Request.Context(), f, fileSize, path)
+		extractErr = h.extractZip(c.Request.Context(), f, fileSize, path, defaults)
 	case "targz", "tgz":
-		extractErr = h.extractTarGz(c.Request.Context(), f, path)
+		extractErr = h.extractTarGz(c.Request.Context(), f, path, defaults)
 	case "zst":
-		extractErr = h.extractTarZst(c.Request.Context(), f, path)
+		extractErr = h.extractTarZst(c.Request.Context(), f, path, defaults)
 	case "7z", "7zip":
-		extractErr = h.extract7z(c.Request.Context(), f, fileSize, path)
+		extractErr = h.extract7z(c.Request.Context(), f, fileSize, path, defaults)
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported extract type: " + extractType})
 		return
@@ -113,7 +117,7 @@ func (h *FileHandler) HandlePutDir(c *gin.Context) {
 	c.Status(http.StatusOK)
 }
 
-func (h *FileHandler) extractZip(ctx context.Context, r io.ReaderAt, size int64, destPath string) error {
+func (h *FileHandler) extractZip(ctx context.Context, r io.ReaderAt, size int64, destPath string, defaults map[string]string) error {
 	zr, err := zip.NewReader(r, size)
 	if err != nil {
 		return err
@@ -138,8 +142,9 @@ func (h *FileHandler) extractZip(ctx context.Context, r io.ReaderAt, size int64,
 		throttled := NewThrottledReader(rc, h.ThrottleSpeed)
 
 		meta := jetstream.ObjectMeta{
-			Name: targetPath,
-			Opts: &jetstream.ObjectMetaOptions{ChunkSize: 1024 * 1024},
+			Name:     targetPath,
+			Metadata: copyMeta(defaults),
+			Opts:     &jetstream.ObjectMetaOptions{ChunkSize: 1024 * 1024},
 		}
 
 		_, err = bucket.Put(ctx, meta, throttled)
@@ -151,27 +156,27 @@ func (h *FileHandler) extractZip(ctx context.Context, r io.ReaderAt, size int64,
 	return nil
 }
 
-func (h *FileHandler) extractTarGz(ctx context.Context, r io.Reader, destPath string) error {
+func (h *FileHandler) extractTarGz(ctx context.Context, r io.Reader, destPath string, defaults map[string]string) error {
 	gzr, err := gzip.NewReader(r)
 	if err != nil {
 		return err
 	}
 	defer gzr.Close()
 
-	return h.extractTar(ctx, gzr, destPath)
+	return h.extractTar(ctx, gzr, destPath, defaults)
 }
 
-func (h *FileHandler) extractTarZst(ctx context.Context, r io.Reader, destPath string) error {
+func (h *FileHandler) extractTarZst(ctx context.Context, r io.Reader, destPath string, defaults map[string]string) error {
 	zsr, err := zstd.NewReader(r)
 	if err != nil {
 		return err
 	}
 	defer zsr.Close()
 
-	return h.extractTar(ctx, zsr, destPath)
+	return h.extractTar(ctx, zsr, destPath, defaults)
 }
 
-func (h *FileHandler) extractTar(ctx context.Context, r io.Reader, destPath string) error {
+func (h *FileHandler) extractTar(ctx context.Context, r io.Reader, destPath string, defaults map[string]string) error {
 	tr := tar.NewReader(r)
 	bucket := h.Store.GetBucket()
 
@@ -193,9 +198,22 @@ func (h *FileHandler) extractTar(ctx context.Context, r io.Reader, destPath stri
 
 		throttled := NewThrottledReader(tr, h.ThrottleSpeed)
 
+		// Use tar header metadata when available, fall back to defaults
+		m := copyMeta(defaults)
+		if header.Mode != 0 {
+			m["permissions"] = fmt.Sprintf("%04o", header.Mode&0o7777)
+		}
+		if header.Uname != "" {
+			m["owner"] = header.Uname
+		}
+		if header.Gname != "" {
+			m["group"] = header.Gname
+		}
+
 		meta := jetstream.ObjectMeta{
-			Name: targetPath,
-			Opts: &jetstream.ObjectMetaOptions{ChunkSize: 1024 * 1024},
+			Name:     targetPath,
+			Metadata: m,
+			Opts:     &jetstream.ObjectMetaOptions{ChunkSize: 1024 * 1024},
 		}
 
 		_, err = bucket.Put(ctx, meta, throttled)
@@ -206,7 +224,7 @@ func (h *FileHandler) extractTar(ctx context.Context, r io.Reader, destPath stri
 	return nil
 }
 
-func (h *FileHandler) extract7z(ctx context.Context, r io.ReaderAt, size int64, destPath string) error {
+func (h *FileHandler) extract7z(ctx context.Context, r io.ReaderAt, size int64, destPath string, defaults map[string]string) error {
 	zr, err := sevenzip.NewReader(r, size)
 	if err != nil {
 		return err
@@ -230,8 +248,9 @@ func (h *FileHandler) extract7z(ctx context.Context, r io.ReaderAt, size int64, 
 		throttled := NewThrottledReader(rc, h.ThrottleSpeed)
 
 		meta := jetstream.ObjectMeta{
-			Name: targetPath,
-			Opts: &jetstream.ObjectMetaOptions{ChunkSize: 1024 * 1024},
+			Name:     targetPath,
+			Metadata: copyMeta(defaults),
+			Opts:     &jetstream.ObjectMetaOptions{ChunkSize: 1024 * 1024},
 		}
 
 		_, err = bucket.Put(ctx, meta, throttled)
@@ -258,11 +277,26 @@ func (h *FileHandler) HandleListDir(c *gin.Context) {
 	infos, err := bucket.List(c.Request.Context())
 	if err != nil {
 		if err == jetstream.ErrNoObjectsFound {
-			c.JSON(http.StatusOK, []string{})
+			if c.Query("detail") == "true" {
+				c.JSON(http.StatusOK, []FileInfo{})
+			} else {
+				c.JSON(http.StatusOK, []string{})
+			}
 			return
 		}
 		log.Error().Err(err).Str("path", path).Msg("failed to list directory")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to list directory: %v", err)})
+		return
+	}
+
+	if c.Query("detail") == "true" {
+		var files []FileInfo
+		for _, info := range infos {
+			if strings.HasPrefix(info.Name, path) {
+				files = append(files, fileInfoFromObject(info))
+			}
+		}
+		c.JSON(http.StatusOK, files)
 		return
 	}
 
@@ -314,4 +348,52 @@ func (h *FileHandler) HandleDeleteDir(c *gin.Context) {
 	}
 
 	c.Status(http.StatusOK)
+}
+
+// metaDefaults reads optional metadata form fields and returns defaults.
+func metaDefaults(c *gin.Context) map[string]string {
+	permissions := c.PostForm("permissions")
+	if permissions == "" {
+		permissions = "0644"
+	}
+	owner := c.PostForm("owner")
+	if owner == "" {
+		owner = ownerFromTLS(c)
+	}
+	group := c.PostForm("group")
+	return map[string]string{
+		"permissions": permissions,
+		"owner":       owner,
+		"group":       group,
+	}
+}
+
+// copyMeta returns a shallow copy of the metadata map.
+func copyMeta(m map[string]string) map[string]string {
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+// fileInfoFromObject builds a FileInfo from a NATS ObjectInfo.
+func fileInfoFromObject(info *jetstream.ObjectInfo) FileInfo {
+	permissions := "0644"
+	var owner, group string
+	if info.Metadata != nil {
+		if v, ok := info.Metadata["permissions"]; ok && v != "" {
+			permissions = v
+		}
+		owner = info.Metadata["owner"]
+		group = info.Metadata["group"]
+	}
+	return FileInfo{
+		Name:        info.Name,
+		Size:        info.Size,
+		ModTime:     info.ModTime.Format(time.RFC3339),
+		Permissions: permissions,
+		Owner:       owner,
+		Group:       group,
+	}
 }

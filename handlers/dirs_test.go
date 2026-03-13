@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/json"
 	"fmt"
 	"mime/multipart"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/f1bonacc1/ha-store/handlers"
 	"github.com/klauspost/compress/zstd"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -287,4 +289,108 @@ func TestHandleDeleteDir(t *testing.T) {
 	assert.NotContains(t, w.Body.String(), "folder/file1")
 	assert.NotContains(t, w.Body.String(), "folder/sub/file2")
 	assert.Contains(t, w.Body.String(), "other/file3")
+}
+
+func TestHandleListDir_Detail(t *testing.T) {
+	r, _, cleanup := setupHandlerTest(t)
+	defer cleanup()
+
+	// Upload a file with metadata
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("permissions", "0755")
+	_ = writer.WriteField("owner", "bob")
+	_ = writer.WriteField("group", "dev")
+	part, _ := writer.CreateFormFile("file", "test.txt")
+	part.Write([]byte("hello world"))
+	writer.Close()
+
+	req := httptest.NewRequest("PUT", "/files/detail/test.txt", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// List with detail=true
+	req = httptest.NewRequest("GET", "/dirs/detail?detail=true", nil)
+	w = httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var files []handlers.FileInfo
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &files))
+	require.Len(t, files, 1)
+	assert.Equal(t, "detail/test.txt", files[0].Name)
+	assert.Equal(t, "0755", files[0].Permissions)
+	assert.Equal(t, "bob", files[0].Owner)
+	assert.Equal(t, "dev", files[0].Group)
+	assert.Equal(t, uint64(11), files[0].Size)
+	assert.NotEmpty(t, files[0].ModTime)
+}
+
+func TestHandleListDir_DetailDefaultMetadata(t *testing.T) {
+	r, _, cleanup := setupHandlerTest(t)
+	defer cleanup()
+
+	// Upload without metadata
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, _ := writer.CreateFormFile("file", "plain.txt")
+	part.Write([]byte("data"))
+	writer.Close()
+
+	req := httptest.NewRequest("PUT", "/files/nomd/plain.txt", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	// List with detail
+	req = httptest.NewRequest("GET", "/dirs/nomd?detail=true", nil)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	var files []handlers.FileInfo
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &files))
+	require.Len(t, files, 1)
+	assert.Equal(t, "0644", files[0].Permissions)
+}
+
+func TestHandlePutDir_TarExtraction_PreservesMetadata(t *testing.T) {
+	r, s, cleanup := setupHandlerTest(t)
+	defer cleanup()
+
+	// Create a tar.gz with specific permissions and ownership
+	buf := new(bytes.Buffer)
+	gw := gzip.NewWriter(buf)
+	tw := tar.NewWriter(gw)
+	tw.WriteHeader(&tar.Header{
+		Name:  "script.sh",
+		Size:  6,
+		Mode:  0o755,
+		Uname: "root",
+		Gname: "wheel",
+	})
+	tw.Write([]byte("#!/bin"))
+	tw.Close()
+	gw.Close()
+
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, _ := writer.CreateFormFile("file", "archive.tgz")
+	part.Write(buf.Bytes())
+	writer.Close()
+
+	req := httptest.NewRequest("PUT", "/dirs/tarmeta?extract=tgz", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// Verify metadata was preserved from tar headers
+	bucket := s.GetBucket()
+	info, err := bucket.GetInfo(context.Background(), "tarmeta/script.sh")
+	require.NoError(t, err)
+	assert.Equal(t, "0755", info.Metadata["permissions"])
+	assert.Equal(t, "root", info.Metadata["owner"])
+	assert.Equal(t, "wheel", info.Metadata["group"])
 }

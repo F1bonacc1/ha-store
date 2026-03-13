@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/f1bonacc1/ha-store/stctl/client"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +22,7 @@ func newFileCmd() *cobra.Command {
 }
 
 func newFilePutCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "put <remote-path> <local-file>",
 		Short: "Upload a file",
 		Args:  cobra.ExactArgs(2),
@@ -30,7 +31,14 @@ func newFilePutCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			stats, err := c.PutFile(args[0], args[1])
+			perms, _ := cmd.Flags().GetString("permissions")
+			owner, _ := cmd.Flags().GetString("owner")
+			group, _ := cmd.Flags().GetString("group")
+			stats, err := c.PutFileWithOptions(args[0], args[1], client.PutFileOptions{
+				Permissions: perms,
+				Owner:       owner,
+				Group:       group,
+			})
 			if err != nil {
 				return err
 			}
@@ -38,6 +46,12 @@ func newFilePutCmd() *cobra.Command {
 			return nil
 		},
 	}
+
+	cmd.Flags().StringP("permissions", "m", "", "file permissions in octal (e.g. 0644)")
+	cmd.Flags().StringP("owner", "o", "", "file owner")
+	cmd.Flags().StringP("group", "g", "", "file group")
+
+	return cmd
 }
 
 func newFileGetCmd() *cobra.Command {

@@ -2,6 +2,7 @@ package handlers_test
 
 import (
 	"bytes"
+	"context"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
@@ -194,4 +195,59 @@ func TestHandleDeleteFile(t *testing.T) {
 			assert.Equal(t, tt.expectedStatus, w.Code)
 		})
 	}
+}
+
+func TestHandlePutFile_WithMetadata(t *testing.T) {
+	r, s, cleanup := setupHandlerTest(t)
+	defer cleanup()
+
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	_ = writer.WriteField("permissions", "0755")
+	_ = writer.WriteField("owner", "alice")
+	_ = writer.WriteField("group", "staff")
+	part, err := writer.CreateFormFile("file", "meta.txt")
+	require.NoError(t, err)
+	_, _ = part.Write([]byte("hello"))
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest("PUT", "/files/meta.txt", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// Verify metadata was stored
+	bucket := s.GetBucket()
+	info, err := bucket.GetInfo(context.Background(), "meta.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "0755", info.Metadata["permissions"])
+	assert.Equal(t, "alice", info.Metadata["owner"])
+	assert.Equal(t, "staff", info.Metadata["group"])
+}
+
+func TestHandlePutFile_DefaultMetadata(t *testing.T) {
+	r, s, cleanup := setupHandlerTest(t)
+	defer cleanup()
+
+	body := new(bytes.Buffer)
+	writer := multipart.NewWriter(body)
+	part, err := writer.CreateFormFile("file", "default.txt")
+	require.NoError(t, err)
+	_, _ = part.Write([]byte("hello"))
+	require.NoError(t, writer.Close())
+
+	req := httptest.NewRequest("PUT", "/files/default.txt", body)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	require.Equal(t, http.StatusOK, w.Code)
+
+	// Verify default metadata
+	bucket := s.GetBucket()
+	info, err := bucket.GetInfo(context.Background(), "default.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "0644", info.Metadata["permissions"])
+	assert.Equal(t, "", info.Metadata["owner"])
+	assert.Equal(t, "", info.Metadata["group"])
 }

@@ -144,20 +144,86 @@ func TestDirExtractCmd(t *testing.T) {
 	assert.Contains(t, out, "Extracted")
 }
 
-func TestDirExtractCmd_DefaultType(t *testing.T) {
-	var gotExtract string
+func TestDirExtractCmd_AutoDetectType(t *testing.T) {
+	tests := []struct {
+		filename string
+		wantType string
+	}{
+		{"archive.tgz", "tgz"},
+		{"archive.tar.gz", "tgz"},
+		{"archive.zip", "zip"},
+		{"archive.tar.zst", "zst"},
+		{"archive.7z", "7z"},
+		{"unknown.bin", "tgz"}, // fallback
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.filename, func(t *testing.T) {
+			var gotExtract string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				gotExtract = r.URL.Query().Get("extract")
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer srv.Close()
+
+			archive := filepath.Join(t.TempDir(), tt.filename)
+			require.NoError(t, os.WriteFile(archive, []byte("data"), 0644))
+
+			_, err := runCmd(t, srv.URL, "dir", "extract", "mydir", archive)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantType, gotExtract)
+		})
+	}
+}
+
+func TestFormatPermissions(t *testing.T) {
+	tests := []struct {
+		octal string
+		isDir bool
+		want  string
+	}{
+		{"0644", false, "-rw-r--r--"},
+		{"0755", false, "-rwxr-xr-x"},
+		{"0600", false, "-rw-------"},
+		{"0777", true, "drwxrwxrwx"},
+		{"0755", true, "drwxr-xr-x"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.octal, func(t *testing.T) {
+			got := formatPermissions(tt.octal, tt.isDir)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestDirLsLongCmd(t *testing.T) {
+	files := []FileInfoJSON{
+		{Name: "mydir/readme.txt", Size: 1024, ModTime: "2026-03-13T10:30:00Z", Permissions: "0644", Owner: "alice", Group: "staff"},
+		{Name: "mydir/sub/other.txt", Size: 2048, ModTime: "2026-03-13T11:00:00Z", Permissions: "0755", Owner: "bob", Group: "dev"},
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotExtract = r.URL.Query().Get("extract")
-		w.WriteHeader(http.StatusOK)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(files)
 	}))
 	defer srv.Close()
 
-	archive := filepath.Join(t.TempDir(), "test.tgz")
-	require.NoError(t, os.WriteFile(archive, []byte("data"), 0644))
-
-	_, err := runCmd(t, srv.URL, "dir", "extract", "mydir", archive)
+	out, err := runCmd(t, srv.URL, "ls", "-l", "mydir")
 	require.NoError(t, err)
-	assert.Equal(t, "tgz", gotExtract)
+	assert.Contains(t, out, "-rw-r--r--")
+	assert.Contains(t, out, "alice")
+	assert.Contains(t, out, "readme.txt")
+	assert.Contains(t, out, "drwxr-xr-x") // sub/ is a directory
+	assert.Contains(t, out, "bob")
+}
+
+// FileInfoJSON matches the server's FileInfo JSON shape for test mocking.
+type FileInfoJSON struct {
+	Name        string `json:"name"`
+	Size        uint64 `json:"size"`
+	ModTime     string `json:"mod_time"`
+	Permissions string `json:"permissions"`
+	Owner       string `json:"owner"`
+	Group       string `json:"group"`
 }
 
 func TestMissingArgs(t *testing.T) {

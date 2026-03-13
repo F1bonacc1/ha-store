@@ -15,6 +15,23 @@ import (
 	"time"
 )
 
+// FileInfo represents detailed file metadata returned by the server.
+type FileInfo struct {
+	Name        string `json:"name"`
+	Size        uint64 `json:"size"`
+	ModTime     string `json:"mod_time"`
+	Permissions string `json:"permissions"`
+	Owner       string `json:"owner"`
+	Group       string `json:"group"`
+}
+
+// PutFileOptions contains optional metadata for file uploads.
+type PutFileOptions struct {
+	Permissions string
+	Owner       string
+	Group       string
+}
+
 type TransferStats struct {
 	Bytes    int64
 	Duration time.Duration
@@ -94,6 +111,10 @@ func cleanPath(remotePath string) string {
 }
 
 func (c *Client) PutFile(remotePath, localPath string) (*TransferStats, error) {
+	return c.PutFileWithOptions(remotePath, localPath, PutFileOptions{})
+}
+
+func (c *Client) PutFileWithOptions(remotePath, localPath string, opts PutFileOptions) (*TransferStats, error) {
 	f, err := os.Open(localPath)
 	if err != nil {
 		return nil, fmt.Errorf("open file: %w", err)
@@ -105,12 +126,27 @@ func (c *Client) PutFile(remotePath, localPath string) (*TransferStats, error) {
 		return nil, fmt.Errorf("stat file: %w", err)
 	}
 
+	var fields map[string]string
+	if opts.Permissions != "" || opts.Owner != "" || opts.Group != "" {
+		fields = make(map[string]string)
+		if opts.Permissions != "" {
+			fields["permissions"] = opts.Permissions
+		}
+		if opts.Owner != "" {
+			fields["owner"] = opts.Owner
+		}
+		if opts.Group != "" {
+			fields["group"] = opts.Group
+		}
+	}
+
 	start := time.Now()
 	err = c.uploadMultipart(
 		http.MethodPut,
 		fmt.Sprintf("%s/files/%s", c.BaseURL, cleanPath(remotePath)),
 		filepath.Base(localPath),
 		f,
+		fields,
 	)
 	if err != nil {
 		return nil, err
@@ -226,6 +262,53 @@ func (c *Client) ListDir(remotePath string) ([]string, error) {
 	return children, nil
 }
 
+func (c *Client) ListDirDetailed(remotePath string) ([]FileInfo, error) {
+	prefix := cleanPath(remotePath)
+	resp, err := c.HTTPClient.Get(fmt.Sprintf("%s/dirs/%s?detail=true", c.BaseURL, prefix))
+	if err != nil {
+		return nil, fmt.Errorf("request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.parseError(resp)
+	}
+
+	var allFiles []FileInfo
+	if err := json.NewDecoder(resp.Body).Decode(&allFiles); err != nil {
+		return nil, fmt.Errorf("decode response: %w", err)
+	}
+
+	// Ensure prefix ends with "/" for stripping (unless root)
+	if prefix != "" && !strings.HasSuffix(prefix, "/") {
+		prefix += "/"
+	}
+
+	seen := make(map[string]struct{})
+	var children []FileInfo
+	for _, f := range allFiles {
+		rel := strings.TrimPrefix(f.Name, prefix)
+		if rel == "" {
+			continue
+		}
+		// Take only the first path segment
+		if idx := strings.Index(rel, "/"); idx >= 0 {
+			rel = rel[:idx+1] // keep trailing slash to indicate directory
+		}
+		if _, ok := seen[rel]; !ok {
+			seen[rel] = struct{}{}
+			entry := f
+			entry.Name = rel
+			children = append(children, entry)
+		}
+	}
+
+	sort.Slice(children, func(i, j int) bool {
+		return children[i].Name < children[j].Name
+	})
+	return children, nil
+}
+
 func (c *Client) DeleteDir(remotePath string) error {
 	req, err := http.NewRequest(http.MethodDelete, fmt.Sprintf("%s/dirs/%s", c.BaseURL, cleanPath(remotePath)), nil)
 	if err != nil {
@@ -252,14 +335,21 @@ func (c *Client) ExtractArchive(remotePath, archivePath, archiveType string) err
 	defer f.Close()
 
 	url := fmt.Sprintf("%s/dirs/%s?extract=%s", c.BaseURL, cleanPath(remotePath), archiveType)
-	return c.uploadMultipart(http.MethodPut, url, filepath.Base(archivePath), f)
+	return c.uploadMultipart(http.MethodPut, url, filepath.Base(archivePath), f, nil)
 }
 
-func (c *Client) uploadMultipart(method, url, filename string, r io.Reader) error {
+func (c *Client) uploadMultipart(method, url, filename string, r io.Reader, fields map[string]string) error {
 	pr, pw := io.Pipe()
 	writer := multipart.NewWriter(pw)
 
 	go func() {
+		// Write extra form fields before the file part
+		for k, v := range fields {
+			if err := writer.WriteField(k, v); err != nil {
+				pw.CloseWithError(err)
+				return
+			}
+		}
 		part, err := writer.CreateFormFile("file", filename)
 		if err != nil {
 			pw.CloseWithError(err)
