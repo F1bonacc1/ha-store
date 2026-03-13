@@ -12,21 +12,45 @@ processes:
     depends_on:
       sanitycheck:
         condition: process_completed_successfully
+
+  nats-config:
+    command: |
+      for i in 0 1 2; do
+        cat > ./nats-cluster/n$${i}.conf <<NATSEOF
+      server_name: N$${i}
+      listen: "127.0.0.1:422$${i}"
+      http_port: 822$${i}
+
+      jetstream {
+        store_dir: "./data/n$${i}"
+      }
+
+      cluster {
+        name: nats-cluster
+        listen: "127.0.0.1:622$${i}"
+        connect_retries: 30
+        routes: [
+          "nats://127.0.0.1:6220"
+          "nats://127.0.0.1:6221"
+          "nats://127.0.0.1:6222"
+        ]
+      }
+      NATSEOF
+      done
+      echo "Generated NATS configs for nodes 0, 1, 2"
+    working_dir: "."
+    depends_on:
+      prepare:
+        condition: process_completed_successfully
   pc_log:
     command: "tail -f -n100 process-compose-${USER}.log"
     working_dir: "/tmp"
 
   nats-cluster-node:
-    command: >
-      nats-server --name N$${PC_REPLICA_NUM} --js --sd ./data/n$${PC_REPLICA_NUM} --cluster_name=nats-cluster
-      -p 422$${PC_REPLICA_NUM}
-      -m 822$${PC_REPLICA_NUM}
-      --cluster nats://127.0.0.1:622$${PC_REPLICA_NUM}
-      --routes=nats-route://127.0.0.1:6220,nats-route://127.0.0.1:6221,nats-route://127.0.0.1:6222
+    command: nats-server -c ./nats-cluster/n$${PC_REPLICA_NUM}.conf
     replicas: 3
-    working_dir: "./nats-cluster"
     depends_on:
-      prepare:
+      nats-config:
         condition: process_completed_successfully
     description: "NATS Server instance N{{ .PC_REPLICA_NUM }} (port 422{{ .PC_REPLICA_NUM }}) with JetStream enabled"
     readiness_probe:
@@ -42,7 +66,7 @@ processes:
     # ready_log_line: "Server is ready"
 
   ha-store:
-    command: ./ha-store -nats-url nats://localhost:4220 -replicas 3
+    command: ./ha-store -nats-url nats://localhost:4220,nats://localhost:4221,nats://localhost:4222 -replicas 3 -throttle-speed 500
     description: "HA Store API server"
     depends_on:
       nats-cluster-node-0:
@@ -53,6 +77,7 @@ processes:
         condition: process_healthy
     availability:
       restart: always
+    truncate_log: true
 
   nats-top:
     command: nats-top -s localhost -m 8220
