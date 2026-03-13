@@ -150,6 +150,7 @@ func (h *FileHandler) extractZip(ctx context.Context, r io.ReaderAt, size int64,
 		_, err = bucket.Put(ctx, meta, throttled)
 		rc.Close()
 		if err != nil {
+			bucket.Delete(ctx, targetPath)
 			return fmt.Errorf("failed to put file %s: %w", f.Name, err)
 		}
 	}
@@ -218,6 +219,7 @@ func (h *FileHandler) extractTar(ctx context.Context, r io.Reader, destPath stri
 
 		_, err = bucket.Put(ctx, meta, throttled)
 		if err != nil {
+			bucket.Delete(ctx, targetPath)
 			return fmt.Errorf("failed to put file %s: %w", header.Name, err)
 		}
 	}
@@ -256,6 +258,7 @@ func (h *FileHandler) extract7z(ctx context.Context, r io.ReaderAt, size int64, 
 		_, err = bucket.Put(ctx, meta, throttled)
 		rc.Close()
 		if err != nil {
+			bucket.Delete(ctx, targetPath)
 			return fmt.Errorf("failed to put file %s: %w", f.Name, err)
 		}
 	}

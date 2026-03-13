@@ -109,6 +109,12 @@ func (h *FileHandler) HandlePutFile(c *gin.Context) {
 		}
 	}
 	if err != nil {
+		// Clean up partial object left by failed Put to prevent download hangs.
+		// A failed Put may leave partial chunks/metadata in NATS that cause
+		// subsequent Get() to block forever waiting for missing chunks.
+		if delErr := bucket.Delete(ctx, path); delErr != nil && !errors.Is(delErr, jetstream.ErrObjectNotFound) {
+			log.Warn().Err(delErr).Str("path", path).Msg("failed to clean up partial object after upload failure")
+		}
 		log.Error().Err(err).Str("path", path).Msg("failed to save file")
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to save file: %v", err)})
 		return
@@ -154,6 +160,8 @@ func (h *FileHandler) HandleGetFile(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to get file: %v", err)})
 		return
 	}
+
+	defer obj.Close()
 
 	info, err := obj.Info()
 	if err != nil {
