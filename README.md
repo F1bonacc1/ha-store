@@ -5,18 +5,21 @@
 ## Prerequisites
 
 - Go 1.20 or higher
-- Docker and Docker Compose (for running NATS dependencies)
+- [NATS server](https://nats.io/download/) (`nats-server` binary in PATH)
+- [process-compose](https://f1bonacc1.github.io/process-compose/) (for running the local NATS cluster)
 - TLS certificates for mTLS authentication (optional, for production)
 
 ## Getting Started
 
 ### 1. Start Dependencies
 
-Start the NATS server using Docker Compose:
+Start a 3-node NATS cluster using process-compose:
 
 ```bash
-make docker-up
+process-compose up
 ```
+
+This launches a local 3-node NATS JetStream cluster (ports 4220–4222) along with the ha-store server. See `process-compose.yaml` for details.
 
 ### 2. Build and Run
 
@@ -37,22 +40,6 @@ Run the application:
 ```
 
 The server will start on port `8090` by default.
-
-## Configuration
-
-Build the application:
-
-```bash
-make build
-```
-
-Run the application with mTLS:
-
-```bash
-./ha-store -tls-cert=server.crt -tls-key=server.key -tls-ca=ca.crt
-```
-
-The server will start on port `8090` by default with HTTPS and mTLS enabled.
 
 ## Configuration
 
@@ -236,9 +223,12 @@ make coverage
 
 ### Clean Up
 
-Stop Docker dependencies and remove build artifacts:
+Stop the local cluster and remove build artifacts:
 
 ```bash
-make docker-down
+# Stop process-compose (Ctrl+C in the terminal, or)
+process-compose down
+
+# Remove build artifacts
 make clean
 ```
