@@ -184,14 +184,21 @@ stctl file get docs/readme.txt
 stctl file rm docs/readme.txt
 ```
 
+#### Listing
+
+```bash
+# List directory contents
+stctl ls mydir
+
+# Long listing format (permissions, owner, size, mod time)
+stctl ls -l mydir
+```
+
 #### Directories
 
 ```bash
 # Create an empty directory
 stctl dir create mydir
-
-# List directory contents
-stctl dir ls mydir
 
 # Upload and extract an archive (default type: tgz)
 stctl dir extract mydir ./archive.tgz
