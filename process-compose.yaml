@@ -29,6 +29,10 @@ processes:
         name: nats-cluster
         listen: "127.0.0.1:622$${i}"
         connect_retries: 30
+        pool_size: 3
+        compression: {
+          mode: "accept"
+        }
         routes: [
           "nats://127.0.0.1:6220"
           "nats://127.0.0.1:6221"
@@ -66,7 +70,7 @@ processes:
     # ready_log_line: "Server is ready"
 
   ha-store:
-    command: ./ha-store -nats-url nats://localhost:4220,nats://localhost:4221,nats://localhost:4222 -replicas 3 -throttle-speed 500
+    command: ./ha-store -nats-url nats://localhost:4220,nats://localhost:4221,nats://localhost:4222 -replicas 3 -throttle-speed 300
     description: "HA Store API server"
     depends_on:
       nats-cluster-node-0:
